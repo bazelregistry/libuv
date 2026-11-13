@@ -36,8 +36,6 @@
 #define MAX_EPOLL_INSTANCES       256
 #define MAX_ITEMS_PER_EPOLL       1024
 
-#define UV__O_CLOEXEC             0x80000
-
 struct epoll_event {
   int events;
   int fd;
@@ -45,7 +43,7 @@ struct epoll_event {
 };
 
 typedef struct {
-  QUEUE member;
+  struct uv__queue member;
   struct pollfd* items;
   unsigned long size;
   int msg_queue;
@@ -70,5 +68,6 @@ int sem_destroy(UV_PLATFORM_SEM_T* semid);
 int sem_post(UV_PLATFORM_SEM_T* semid);
 int sem_trywait(UV_PLATFORM_SEM_T* semid);
 int sem_wait(UV_PLATFORM_SEM_T* semid);
+void uv__os390_cleanup(void);
 
 #endif /* UV_OS390_SYSCALL_H_ */

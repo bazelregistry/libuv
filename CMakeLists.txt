@@ -1,8 +1,13 @@
-cmake_minimum_required(VERSION 3.4)
-project(libuv LANGUAGES C)
+cmake_minimum_required(VERSION 3.10)
 
-cmake_policy(SET CMP0057 NEW) # Enable IN_LIST operator
-cmake_policy(SET CMP0064 NEW) # Support if (TEST) operator
+if(POLICY CMP0091)
+  cmake_policy(SET CMP0091 NEW) # Enable MSVC_RUNTIME_LIBRARY setting
+endif()
+if(POLICY CMP0092)
+  cmake_policy(SET CMP0092 NEW) # disable /W3 warning, if possible
+endif()
+
+project(libuv LANGUAGES C)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
@@ -15,11 +20,30 @@ include(CTest)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
-set(CMAKE_C_STANDARD 90)
+set(CMAKE_C_STANDARD 11)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+
+option(LIBUV_BUILD_SHARED "Build shared lib" ON)
+
+# Only works if the downstream project's CMakeLists.txt includes the kernel
+# before libuv. Seems like a safe assumption and worth a shot.
+if(TARGET freertos_kernel)
+  set(uv__freertos_default ON)
+else()
+  set(uv__freertos_default OFF)
+endif()
+
+option(LIBUV_BUILD_FOR_FREERTOS "Build for FreeRTOS" ${uv__freertos_default})
+if(LIBUV_BUILD_FOR_FREERTOS)
+  # Normal variable, shadows the cache entry. Also turns off LIBUV_BUILD_TESTS.
+  set(LIBUV_BUILD_SHARED OFF)
+endif()
 
 cmake_dependent_option(LIBUV_BUILD_TESTS
   "Build the unit tests when BUILD_TESTING is enabled and we are the root project" ON
-  "BUILD_TESTING;CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR" OFF)
+  "BUILD_TESTING;LIBUV_BUILD_SHARED;CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR" OFF)
 cmake_dependent_option(LIBUV_BUILD_BENCH
   "Build the benchmarks when building unit tests and we are the root project" ON
   "LIBUV_BUILD_TESTS" OFF)
@@ -27,15 +51,66 @@ cmake_dependent_option(LIBUV_BUILD_BENCH
 # Qemu Build
 option(QEMU "build for qemu" OFF)
 if(QEMU)
-  add_definitions(-D__QEMU__=1)
+  list(APPEND uv_defines __QEMU__=1)
 endif()
 
+# Note: these are mutually exclusive.
 option(ASAN "Enable AddressSanitizer (ASan)" OFF)
-if(ASAN AND CMAKE_C_COMPILER_ID MATCHES "AppleClang|GNU|Clang")
-  add_definitions(-D__ASAN__=1)
-  set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fno-omit-frame-pointer -fsanitize=address")
-  set (CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} -fno-omit-frame-pointer -fsanitize=address")
-  set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
+option(MSAN "Enable MemorySanitizer (MSan)" OFF)
+option(TSAN "Enable ThreadSanitizer (TSan)" OFF)
+option(UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)
+
+if(MSAN AND NOT CMAKE_C_COMPILER_ID MATCHES "AppleClang|Clang")
+  message(SEND_ERROR "MemorySanitizer requires clang. Try again with -DCMAKE_C_COMPILER=clang")
+endif()
+
+if(ASAN)
+  list(APPEND uv_defines __ASAN__=1)
+  if(CMAKE_C_COMPILER_ID MATCHES "AppleClang|GNU|Clang")
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
+    set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
+  elseif(MSVC)
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /fsanitize=address")
+  else()
+    message(SEND_ERROR "AddressSanitizer support requires clang, gcc, or msvc. Try again with -DCMAKE_C_COMPILER.")
+  endif()
+endif()
+
+if(MSAN)
+  list(APPEND uv_defines __MSAN__=1)
+  set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -fsanitize=memory")
+  set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=memory")
+  set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=memory")
+endif()
+
+if(TSAN)
+  list(APPEND uv_defines __TSAN__=1)
+  if(CMAKE_C_COMPILER_ID MATCHES "AppleClang|GNU|Clang")
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-omit-frame-pointer -fsanitize=thread")
+    set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=thread")
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=thread")
+  else()
+    message(SEND_ERROR "ThreadSanitizer support requires clang or gcc. Try again with -DCMAKE_C_COMPILER.")
+  endif()
+endif()
+
+if(UBSAN)
+  cmake_minimum_required(VERSION 3.13)
+  list(APPEND uv_defines __UBSAN__=1)
+  if(CMAKE_C_COMPILER_ID MATCHES "AppleClang|GNU|Clang")
+    add_compile_options("-fsanitize=undefined" "-fno-sanitize-recover=undefined")
+    if (NOT WIN32)
+      add_link_options("-fsanitize=undefined")
+    endif()
+    if(MSVC)
+      add_compile_options("/Oy-")
+    else()
+      add_compile_options("-fno-omit-frame-pointer")
+    endif()
+  else()
+    message(SEND_ERROR "UndefinedBehaviorSanitizer support requires clang or gcc. Try again with -DCMAKE_C_COMPILER.")
+  endif()
 endif()
 
 # Compiler check
@@ -106,12 +181,22 @@ list(APPEND uv_cflags ${lint-utf8-msvc} )
 check_c_compiler_flag(-fno-strict-aliasing UV_F_STRICT_ALIASING)
 list(APPEND uv_cflags $<$<BOOL:${UV_F_STRICT_ALIASING}>:-fno-strict-aliasing>)
 
+if (MSVC)
+  # Error on calling undeclared functions.
+  list(APPEND uv_cflags "/we4013")
+endif()
+
 set(uv_sources
+    src/alloc.c
+    src/fs-common.c
     src/fs-poll.c
     src/idna.c
     src/inet.c
+    src/net-common.c
     src/random.c
     src/strscpy.c
+    src/strtok.c
+    src/thread-common.c
     src/threadpool.c
     src/timer.c
     src/uv-common.c
@@ -119,14 +204,18 @@ set(uv_sources
     src/version.c)
 
 if(WIN32)
-  list(APPEND uv_defines WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0602)
+  list(APPEND uv_defines WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00 _CRT_DECLARE_NONSTDC_NAMES=0)
   list(APPEND uv_libraries
        psapi
        user32
        advapi32
        iphlpapi
        userenv
-       ws2_32)
+       ws2_32
+       dbghelp
+       ole32
+       shell32
+       synchronization)
   list(APPEND uv_sources
        src/win/async.c
        src/win/core.c
@@ -202,12 +291,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
   list(APPEND uv_defines _GNU_SOURCE)
   list(APPEND uv_libraries dl)
   list(APPEND uv_sources
-       src/unix/android-ifaddrs.c
-       src/unix/linux-core.c
-       src/unix/linux-inotify.c
-       src/unix/linux-syscalls.c
+       src/unix/linux.c
        src/unix/procfs-exepath.c
-       src/unix/pthread-fixes.c
        src/unix/random-getentropy.c
        src/unix/random-getrandom.c
        src/unix/random-sysctl-linux.c)
@@ -245,13 +330,23 @@ if(APPLE)
        src/unix/fsevents.c)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "GNU")
+  list(APPEND uv_defines _GNU_SOURCE _POSIX_C_SOURCE=200112 _XOPEN_SOURCE=500)
+  list(APPEND uv_libraries dl)
+  list(APPEND uv_sources
+       src/unix/bsd-ifaddrs.c
+       src/unix/no-fsevents.c
+       src/unix/no-proctitle.c
+       src/unix/posix-hrtime.c
+       src/unix/posix-poll.c
+       src/unix/hurd.c)
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND uv_defines _GNU_SOURCE _POSIX_C_SOURCE=200112)
   list(APPEND uv_libraries dl rt)
   list(APPEND uv_sources
-       src/unix/linux-core.c
-       src/unix/linux-inotify.c
-       src/unix/linux-syscalls.c
+       src/unix/linux.c
        src/unix/procfs-exepath.c
        src/unix/random-getrandom.c
        src/unix/random-sysctl-linux.c)
@@ -285,7 +380,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "OS390")
   list(APPEND uv_defines _XOPEN_SOURCE=600)
   list(APPEND uv_defines _XOPEN_SOURCE_EXTENDED)
   list(APPEND uv_sources
-       src/unix/pthread-fixes.c
        src/unix/os390.c
        src/unix/os390-syscalls.c
        src/unix/os390-proctitle.c)
@@ -323,14 +417,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "OS400")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
-  list(APPEND uv_defines __EXTENSIONS__ _XOPEN_SOURCE=500)
+  if(CMAKE_SYSTEM_VERSION STREQUAL "5.10")
+    list(APPEND uv_defines SUNOS_NO_IFADDRS)
+    list(APPEND uv_libraries rt)
+  endif()
+  list(APPEND uv_defines __EXTENSIONS__ _XOPEN_SOURCE=500 _REENTRANT)
   list(APPEND uv_libraries kstat nsl sendfile socket)
-  list(APPEND uv_sources src/unix/no-proctitle.c src/unix/sunos.c)
+  list(APPEND uv_sources
+       src/unix/no-proctitle.c
+       src/unix/random-getrandom.c
+       src/unix/sunos.c)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
   list(APPEND uv_defines _BSD_SOURCE)
-  list(APPEND uv_libraries bsd network)
+  list(APPEND uv_libraries network)
   list(APPEND uv_sources
 	  src/unix/haiku.c
 	  src/unix/bsd-ifaddrs.c
@@ -338,6 +439,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
 	  src/unix/no-proctitle.c
 	  src/unix/posix-hrtime.c
 	  src/unix/posix-poll.c)
+  list(APPEND uv_test_libraries bsd)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
@@ -352,28 +454,60 @@ if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
 endif()
 
 if(APPLE OR CMAKE_SYSTEM_NAME MATCHES "DragonFly|FreeBSD|Linux|NetBSD|OpenBSD")
-  list(APPEND uv_test_libraries util)
+  list(APPEND uv_test_libraries m util)
 endif()
 
-add_library(uv SHARED ${uv_sources})
-target_compile_definitions(uv
-  INTERFACE
-    USING_UV_SHARED=1
-  PRIVATE
-    BUILDING_UV_SHARED=1
-    ${uv_defines})
-target_compile_options(uv PRIVATE ${uv_cflags})
-target_include_directories(uv
-  PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  PRIVATE
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
-if(CMAKE_SYSTEM_NAME STREQUAL "OS390")
-  target_include_directories(uv PUBLIC $<BUILD_INTERFACE:${ZOSLIB_DIR}/include>)
-  set_target_properties(uv PROPERTIES LINKER_LANGUAGE CXX)
+if(CYGWIN OR MSYS)
+  list(APPEND uv_defines _GNU_SOURCE)
+  list(APPEND uv_sources
+       src/unix/cygwin.c
+       src/unix/bsd-ifaddrs.c
+       src/unix/no-fsevents.c
+       src/unix/no-proctitle.c
+       src/unix/posix-hrtime.c
+       src/unix/posix-poll.c
+       src/unix/procfs-exepath.c
+       src/unix/sysinfo-loadavg.c
+       src/unix/sysinfo-memory.c)
 endif()
-target_link_libraries(uv ${uv_libraries})
+
+if(LIBUV_BUILD_FOR_FREERTOS)
+  set(uv_sources
+      src/alloc.c
+      src/idna.c
+      src/rtos/freertos.c
+      src/rtos/freertos-stubs.c
+      src/strscpy.c
+      src/timer.c
+      src/uv-common.c
+      src/uv-data-getter-setters.c
+      src/version.c)
+  set(uv_defines)  # drop _GNU_SOURCE, _FILE_OFFSET_BITS etc.
+  set(uv_libraries freertos_kernel)
+endif()
+
+if(LIBUV_BUILD_SHARED)
+  add_library(uv SHARED ${uv_sources})
+  target_compile_definitions(uv
+    INTERFACE
+      USING_UV_SHARED=1
+    PRIVATE
+      BUILDING_UV_SHARED=1
+      ${uv_defines})
+  target_compile_options(uv PRIVATE ${uv_cflags})
+  target_include_directories(uv
+    PUBLIC
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
+  if(CMAKE_SYSTEM_NAME STREQUAL "OS390")
+    target_include_directories(uv PUBLIC $<BUILD_INTERFACE:${ZOSLIB_DIR}/include>)
+    set_target_properties(uv PROPERTIES LINKER_LANGUAGE CXX)
+  endif()
+  target_link_libraries(uv ${uv_libraries})
+  set_target_properties(uv PROPERTIES OUTPUT_NAME "uv")
+endif()
 
 add_library(uv_a STATIC ${uv_sources})
 target_compile_definitions(uv_a PRIVATE ${uv_defines})
@@ -389,6 +523,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "OS390")
   set_target_properties(uv_a PROPERTIES LINKER_LANGUAGE CXX)
 endif()
 target_link_libraries(uv_a ${uv_libraries})
+set_target_properties(uv_a PROPERTIES OUTPUT_NAME "uv")
+if(WIN32)
+  set_target_properties(uv_a PROPERTIES PREFIX "lib")
+endif()
+if(LIBUV_BUILD_FOR_FREERTOS)
+  target_compile_definitions(uv_a PUBLIC UV_FREERTOS)
+endif()
 
 if(LIBUV_BUILD_TESTS)
   # Small hack: use ${uv_test_sources} now to get the runner skeleton,
@@ -401,6 +542,7 @@ if(LIBUV_BUILD_TESTS)
     test/benchmark-fs-stat.c
     test/benchmark-getaddrinfo.c
     test/benchmark-loop-count.c
+    test/benchmark-queue-work.c
     test/benchmark-million-async.c
     test/benchmark-million-timers.c
     test/benchmark-multi-accept.c
@@ -414,7 +556,6 @@ if(LIBUV_BUILD_TESTS)
     test/benchmark-thread.c
     test/benchmark-udp-pummel.c
     test/blackhole-server.c
-    test/dns-server.c
     test/echo-server.c
     test/run-benchmarks.c
     test/runner.c)
@@ -431,7 +572,6 @@ if(LIBUV_BUILD_TESTS)
        test/test-async-null-cb.c
        test/test-async.c
        test/test-barrier.c
-       test/test-callback-order.c
        test/test-callback-stack.c
        test/test-close-fd.c
        test/test-close-order.c
@@ -463,6 +603,7 @@ if(LIBUV_BUILD_TESTS)
        test/test-getaddrinfo.c
        test/test-gethostname.c
        test/test-getnameinfo.c
+       test/test-getrusage.c
        test/test-getsockname.c
        test/test-getters-setters.c
        test/test-gettimeofday.c
@@ -471,8 +612,10 @@ if(LIBUV_BUILD_TESTS)
        test/test-hrtime.c
        test/test-idle.c
        test/test-idna.c
+       test/test-iouring-pollhup.c
        test/test-ip4-addr.c
        test/test-ip6-addr.c
+       test/test-ip-name.c
        test/test-ipc-heavy-traffic-deadlock-bug.c
        test/test-ipc-send-recv.c
        test/test-ipc.c
@@ -480,11 +623,15 @@ if(LIBUV_BUILD_TESTS)
        test/test-loop-close.c
        test/test-loop-configure.c
        test/test-loop-handles.c
+       test/test-loop-oom.c
        test/test-loop-stop.c
        test/test-loop-time.c
        test/test-metrics.c
        test/test-multiple-listen.c
        test/test-mutexes.c
+       test/test-not-readable-nor-writable-on-read-error.c
+       test/test-not-writable-after-shutdown.c
+       test/test-osx-resident-set-memory.c
        test/test-osx-select.c
        test/test-pass-always.c
        test/test-ping-pong.c
@@ -499,6 +646,7 @@ if(LIBUV_BUILD_TESTS)
        test/test-pipe-server-close.c
        test/test-pipe-set-fchmod.c
        test/test-pipe-set-non-blocking.c
+       test/test-pipe-write.c
        test/test-platform-output.c
        test/test-poll-close-doesnt-corrupt-stack.c
        test/test-poll-close.c
@@ -511,24 +659,30 @@ if(LIBUV_BUILD_TESTS)
        test/test-process-title.c
        test/test-queue-foreach-delete.c
        test/test-random.c
+       test/test-readable-on-eof.c
        test/test-ref.c
        test/test-run-nowait.c
        test/test-run-once.c
        test/test-semaphore.c
        test/test-shutdown-close.c
        test/test-shutdown-eof.c
+       test/test-shutdown-simultaneous.c
        test/test-shutdown-twice.c
        test/test-signal-multiple-loops.c
        test/test-signal-pending-on-close.c
        test/test-signal.c
+       test/test-sizeof.c
        test/test-socket-buffer-size.c
        test/test-spawn.c
        test/test-stdio-over-pipes.c
+       test/test-io-64-safe.c
        test/test-strscpy.c
+       test/test-strtok.c
        test/test-tcp-alloc-cb-fail.c
        test/test-tcp-bind-error.c
        test/test-tcp-bind6-error.c
        test/test-tcp-close-accept.c
+       test/test-tcp-close-after-read-timeout.c
        test/test-tcp-close-while-connecting.c
        test/test-tcp-close.c
        test/test-tcp-close-reset.c
@@ -541,19 +695,27 @@ if(LIBUV_BUILD_TESTS)
        test/test-tcp-oob.c
        test/test-tcp-open.c
        test/test-tcp-read-stop.c
+       test/test-tcp-reuseport.c
        test/test-tcp-read-stop-start.c
+       test/test-tcp-rst.c
        test/test-tcp-shutdown-after-write.c
        test/test-tcp-try-write.c
+       test/test-tcp-write-in-a-row.c
        test/test-tcp-try-write-error.c
        test/test-tcp-unexpected-read.c
        test/test-tcp-write-after-connect.c
        test/test-tcp-write-fail.c
+       test/test-write-cancel.c
+       test/test-tcp-write-in-read-cb-backend-timeout.c
        test/test-tcp-write-queue-order.c
        test/test-tcp-write-to-half-open-connection.c
        test/test-tcp-writealot.c
        test/test-test-macros.c
+       test/test-thread-affinity.c
        test/test-thread-equal.c
        test/test-thread.c
+       test/test-thread-name.c
+       test/test-thread-priority.c
        test/test-threadpool-cancel.c
        test/test-threadpool.c
        test/test-timer-again.c
@@ -566,6 +728,7 @@ if(LIBUV_BUILD_TESTS)
        test/test-udp-alloc-cb-fail.c
        test/test-udp-bind.c
        test/test-udp-connect.c
+       test/test-udp-connect6.c
        test/test-udp-create-socket-early.c
        test/test-udp-dgram-too-big.c
        test/test-udp-ipv6.c
@@ -578,11 +741,16 @@ if(LIBUV_BUILD_TESTS)
        test/test-udp-open.c
        test/test-udp-options.c
        test/test-udp-send-and-recv.c
+       test/test-udp-send-fail.c
        test/test-udp-send-hang-loop.c
        test/test-udp-send-immediate.c
        test/test-udp-sendmmsg-error.c
        test/test-udp-send-unreachable.c
+       test/test-udp-recv-cb-close-pollerr.c
+       test/test-udp-recvmsg-unreachable-error.c
        test/test-udp-try-send.c
+       test/test-udp-recv-in-a-row.c
+       test/test-udp-reuseport.c
        test/test-uname.c
        test/test-walk-handles.c
        test/test-watcher-cross-stop.c)
@@ -591,6 +759,7 @@ if(LIBUV_BUILD_TESTS)
   target_compile_definitions(uv_run_tests
                              PRIVATE ${uv_defines} USING_UV_SHARED=1)
   target_compile_options(uv_run_tests PRIVATE ${uv_cflags})
+  target_include_directories(uv_run_tests PRIVATE src)
   target_link_libraries(uv_run_tests uv ${uv_test_libraries})
   add_test(NAME uv_test
            COMMAND uv_run_tests
@@ -599,9 +768,16 @@ if(LIBUV_BUILD_TESTS)
     set_tests_properties(uv_test PROPERTIES ENVIRONMENT
                          "LIBPATH=${CMAKE_BINARY_DIR}:$ENV{LIBPATH}")
   endif()
+  if(WIN32)
+    add_custom_command(TARGET uv_run_tests POST_BUILD
+                       COMMAND "${CMAKE_COMMAND}" -E copy
+                       "$<TARGET_FILE:uv_run_tests>"
+                       "$<TARGET_FILE_DIR:uv_run_tests>/uv_run_tests_no_ext")
+  endif()
   add_executable(uv_run_tests_a ${uv_test_sources} uv_win_longpath.manifest)
   target_compile_definitions(uv_run_tests_a PRIVATE ${uv_defines})
   target_compile_options(uv_run_tests_a PRIVATE ${uv_cflags})
+  target_include_directories(uv_run_tests_a PRIVATE src)
   if(QEMU)
     target_link_libraries(uv_run_tests_a uv_a ${uv_test_libraries} -static)
   else()
@@ -615,48 +791,171 @@ if(LIBUV_BUILD_TESTS)
     set_target_properties(uv_run_tests PROPERTIES LINKER_LANGUAGE CXX)
     set_target_properties(uv_run_tests_a PROPERTIES LINKER_LANGUAGE CXX)
   endif()
+  if(WIN32)
+    add_custom_command(TARGET uv_run_tests_a POST_BUILD
+                       COMMAND "${CMAKE_COMMAND}" -E copy
+                       "$<TARGET_FILE:uv_run_tests_a>"
+                       "$<TARGET_FILE_DIR:uv_run_tests_a>/uv_run_tests_a_no_ext")
+    add_executable(uv_run_appcontainer test/appcontainer.c)
+    target_link_libraries(uv_run_appcontainer userenv advapi32 ntdll)
+  endif()
+
+  if(QNX)
+    install(TARGETS uv_run_tests uv_run_tests_a uv_run_benchmarks_a
+            DESTINATION ${CMAKE_INSTALL_BINDIR}/libuv_tests)
+
+    install(DIRECTORY test/fixtures
+            DESTINATION ${CMAKE_INSTALL_BINDIR}/libuv_tests)
+  endif()
 endif()
 
-if(UNIX OR MINGW)
-  # Now for some gibbering horrors from beyond the stars...
-  foreach(lib IN LISTS uv_libraries)
-    list(APPEND LIBS "-l${lib}")
-  endforeach()
-  string(REPLACE ";" " " LIBS "${LIBS}")
-  # Consider setting project version via project() call?
-  file(STRINGS configure.ac configure_ac REGEX ^AC_INIT)
-  string(REGEX MATCH "([0-9]+)[.][0-9]+[.][0-9]+" PACKAGE_VERSION "${configure_ac}")
-  set(UV_VERSION_MAJOR "${CMAKE_MATCH_1}")
+# Now for some gibbering horrors from beyond the stars...
+foreach(lib IN LISTS uv_libraries)
+  list(APPEND LIBS "-l${lib}")
+endforeach()
+string(REPLACE ";" " " LIBS "${LIBS}")
+# Consider setting project version via project() call?
+file(STRINGS configure.ac configure_ac REGEX ^AC_INIT)
+string(REGEX MATCH "([0-9]+)[.][0-9]+[.][0-9]+" PACKAGE_VERSION "${configure_ac}")
+set(UV_VERSION_MAJOR "${CMAKE_MATCH_1}")
+
+set(includedir ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR})
+set(libdir ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
+set(prefix ${CMAKE_INSTALL_PREFIX})
+configure_file(libuv-static.pc.in libuv-static.pc @ONLY)
+
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES LICENSE-extra DESTINATION ${CMAKE_INSTALL_DOCDIR})
+if(LIBUV_BUILD_FOR_FREERTOS)
+  # freertos_kernel is not ours to export, and -lfreertos_kernel in a .pc
+  # file is meaningless. Install only the headers and the static library.
+  install(TARGETS uv_a ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+else()
+  install(FILES ${PROJECT_BINARY_DIR}/libuv-static.pc
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+  install(TARGETS uv_a EXPORT libuvConfig
+          ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(EXPORT libuvConfig
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libuv
+          NAMESPACE libuv::)
+  write_basic_package_version_file(libuvConfigVersion.cmake
+                                   VERSION ${PACKAGE_VERSION}
+                                   COMPATIBILITY SameMajorVersion)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libuvConfigVersion.cmake
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/libuv)
+endif()
+
+if(LIBUV_BUILD_SHARED)
   # The version in the filename is mirroring the behaviour of autotools.
   set_target_properties(uv PROPERTIES
-    VERSION ${UV_VERSION_MAJOR}.0.0
-    SOVERSION ${UV_VERSION_MAJOR})
-  set(includedir ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR})
-  set(libdir ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR})
-  set(prefix ${CMAKE_INSTALL_PREFIX})
+          VERSION ${UV_VERSION_MAJOR}.0.0
+          SOVERSION ${UV_VERSION_MAJOR})
   configure_file(libuv.pc.in libuv.pc @ONLY)
-  configure_file(libuv-static.pc.in libuv-static.pc @ONLY)
-
-  install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-  install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
-  install(FILES ${PROJECT_BINARY_DIR}/libuv.pc ${PROJECT_BINARY_DIR}/libuv-static.pc
+  install(FILES ${PROJECT_BINARY_DIR}/libuv.pc
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
-  install(TARGETS uv LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(TARGETS uv_a ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(TARGETS uv EXPORT libuvConfig
+          RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+          LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
 
 if(MSVC)
-  install(DIRECTORY include/ DESTINATION include)
-  install(FILES LICENSE DESTINATION .)
-  install(TARGETS uv uv_a
-          RUNTIME DESTINATION lib/$<CONFIG>
-          ARCHIVE DESTINATION lib/$<CONFIG>)
+  set(CMAKE_DEBUG_POSTFIX d)
+  get_filename_component(CMAKE_C_COMPILER_DIR ${CMAKE_C_COMPILER} DIRECTORY)
+  if(ASAN)
+    file(INSTALL "${CMAKE_C_COMPILER_DIR}/llvm-symbolizer.exe" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+    file(INSTALL "${CMAKE_C_COMPILER_DIR}/clang_rt.asan_dynamic-x86_64.dll" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+    file(INSTALL "${CMAKE_C_COMPILER_DIR}/clang_rt.asan_dbg_dynamic-x86_64.dll" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+  endif()
 endif()
+
+if(BUILD_SHARED_LIBS)
+  set(LIB_SELECTED uv)
+else()
+  set(LIB_SELECTED uv_a)
+endif()
+
+add_library(libuv::libuv ALIAS ${LIB_SELECTED})
 
 message(STATUS "summary of build options:
     Install prefix:  ${CMAKE_INSTALL_PREFIX}
     Target system:   ${CMAKE_SYSTEM_NAME}
     Compiler:
-      C compiler:    ${CMAKE_C_COMPILER}
+      C compiler:    ${CMAKE_C_COMPILER} (${CMAKE_C_COMPILER_ID})
       CFLAGS:        ${CMAKE_C_FLAGS_${_build_type}} ${CMAKE_C_FLAGS}
 ")
+
+# clang-tidy support
+option(ENABLE_CLANG_TIDY "Enable clang-tidy checks" ON)
+if(ENABLE_CLANG_TIDY)
+  find_program(CLANG_TIDY_EXE NAMES "clang-tidy")
+  if(CLANG_TIDY_EXE)
+    set(CMAKE_C_CLANG_TIDY "${CLANG_TIDY_EXE}")
+    message(STATUS "clang-tidy found: ${CLANG_TIDY_EXE}")
+  else()
+    set(CMAKE_C_CLANG_TIDY "clang-tidy")
+    message(STATUS "clang-tidy not found: install clang-tidy or set -DCLANG_TIDY_EXE to run tidy analysis on this platform")
+  endif()
+
+  # Collect source files from existing targets (deduplicated)
+  set(ALL_SOURCE_FILES)
+  set(SRC_TARGETS)
+  set(TEST_TARGETS)
+  set(TIDY_TARGETS)
+
+  # Add main library sources
+  list(APPEND ALL_SOURCE_FILES ${uv_sources})
+
+  # Add test sources if tests are enabled
+  if(LIBUV_BUILD_TESTS)
+    list(APPEND ALL_SOURCE_FILES ${uv_test_sources})
+  endif()
+
+  # Remove duplicates and non-existent files
+  list(REMOVE_DUPLICATES ALL_SOURCE_FILES)
+
+  foreach(SOURCE_FILE ${ALL_SOURCE_FILES})
+    # Create a clean target name
+    string(REPLACE "/" "-" TARGET_NAME ${SOURCE_FILE})
+    string(REGEX REPLACE "\\.[^.]*$" "" TARGET_NAME ${TARGET_NAME})
+    set(FULL_TARGET_NAME "tidy-${TARGET_NAME}")
+
+    # Create individual target for this source file
+    add_custom_target(${FULL_TARGET_NAME}
+      COMMAND ${CMAKE_C_CLANG_TIDY} -p "${CMAKE_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE}"
+      COMMENT "Running clang-tidy on ${SOURCE_FILE}"
+      VERBATIM)
+
+    # Add to appropriate folder list
+    if(SOURCE_FILE MATCHES "^src/")
+      list(APPEND SRC_TARGETS ${FULL_TARGET_NAME})
+    elseif(SOURCE_FILE MATCHES "^test/")
+      list(APPEND TEST_TARGETS ${FULL_TARGET_NAME})
+    endif()
+
+    # Add to list of all tidy targets
+    list(APPEND TIDY_TARGETS ${FULL_TARGET_NAME})
+  endforeach()
+
+  # Create folder-based targets
+  if(SRC_TARGETS)
+    add_custom_target(tidy-src
+      COMMENT "Running clang-tidy on src files"
+      VERBATIM)
+    add_dependencies(tidy-src ${SRC_TARGETS})
+  endif()
+
+  if(TEST_TARGETS)
+    add_custom_target(tidy-test
+      COMMENT "Running clang-tidy on test files"
+      VERBATIM)
+    add_dependencies(tidy-test ${TEST_TARGETS})
+  endif()
+
+  # Create main tidy target that depends on all individual targets
+  add_custom_target(tidy
+    COMMENT "Running clang-tidy on all source files"
+    VERBATIM)
+  add_dependencies(tidy ${TIDY_TARGETS})
+endif()

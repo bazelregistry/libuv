@@ -103,7 +103,7 @@ uint64_t uv_get_free_memory(void) {
   int which[] = {CTL_VM, VM_UVMEXP};
 
   if (sysctl(which, ARRAY_SIZE(which), &info, &size, NULL, 0))
-    return UV__ERR(errno);
+    return 0;
 
   return (uint64_t) info.free * sysconf(_SC_PAGESIZE);
 }
@@ -120,14 +120,19 @@ uint64_t uv_get_total_memory(void) {
   size_t size = sizeof(info);
 
   if (sysctl(which, ARRAY_SIZE(which), &info, &size, NULL, 0))
-    return UV__ERR(errno);
+    return 0;
 
   return (uint64_t) info;
 }
 
 
 uint64_t uv_get_constrained_memory(void) {
-  return 0;  /* Memory constraints are unknown. */
+  return uv__get_rlimit_max_memory();
+}
+
+
+uint64_t uv_get_available_memory(void) {
+  return uv_get_free_memory();
 }
 
 
@@ -210,8 +215,10 @@ int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
   if (cp_times == NULL)
     return UV_ENOMEM;
 
-  if (sysctlbyname("kern.cp_time", cp_times, &size, NULL, 0))
+  if (sysctlbyname("kern.cp_time", cp_times, &size, NULL, 0)) {
+    uv__free(cp_times);
     return UV__ERR(errno);
+  }
 
   *cpu_infos = uv__malloc(numcpus * sizeof(**cpu_infos));
   if (!(*cpu_infos)) {

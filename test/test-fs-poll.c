@@ -103,44 +103,44 @@ static void poll_cb(uv_fs_poll_t* handle,
 
   memset(&zero_statbuf, 0, sizeof(zero_statbuf));
 
-  ASSERT(handle == &poll_handle);
-  ASSERT(1 == uv_is_active((uv_handle_t*) handle));
+  ASSERT_PTR_EQ(handle, &poll_handle);
+  ASSERT_EQ(1, uv_is_active((uv_handle_t*) handle));
   ASSERT_NOT_NULL(prev);
   ASSERT_NOT_NULL(curr);
 
   switch (poll_cb_called++) {
   case 0:
-    ASSERT(status == UV_ENOENT);
-    ASSERT(0 == memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
-    ASSERT(0 == memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_EQ(status, UV_ENOENT);
+    ASSERT_OK(memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_OK(memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
     touch_file(FIXTURE);
     break;
 
   case 1:
-    ASSERT(status == 0);
-    ASSERT(0 == memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
-    ASSERT(0 != memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
-    ASSERT(0 == uv_timer_start(&timer_handle, timer_cb, 20, 0));
+    ASSERT_OK(status);
+    ASSERT_OK(memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_NE(0, memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_OK(uv_timer_start(&timer_handle, timer_cb, 20, 0));
     break;
 
   case 2:
-    ASSERT(status == 0);
-    ASSERT(0 != memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
-    ASSERT(0 != memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
-    ASSERT(0 == uv_timer_start(&timer_handle, timer_cb, 200, 0));
+    ASSERT_OK(status);
+    ASSERT_NE(0, memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_NE(0, memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_OK(uv_timer_start(&timer_handle, timer_cb, 200, 0));
     break;
 
   case 3:
-    ASSERT(status == 0);
-    ASSERT(0 != memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
-    ASSERT(0 != memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_OK(status);
+    ASSERT_NE(0, memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_NE(0, memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
     remove(FIXTURE);
     break;
 
   case 4:
-    ASSERT(status == UV_ENOENT);
-    ASSERT(0 != memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
-    ASSERT(0 == memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_EQ(status, UV_ENOENT);
+    ASSERT_NE(0, memcmp(prev, &zero_statbuf, sizeof(zero_statbuf)));
+    ASSERT_OK(memcmp(curr, &zero_statbuf, sizeof(zero_statbuf)));
     uv_close((uv_handle_t*)handle, close_cb);
     break;
 
@@ -155,16 +155,16 @@ TEST_IMPL(fs_poll) {
 
   remove(FIXTURE);
 
-  ASSERT(0 == uv_timer_init(loop, &timer_handle));
-  ASSERT(0 == uv_fs_poll_init(loop, &poll_handle));
-  ASSERT(0 == uv_fs_poll_start(&poll_handle, poll_cb, FIXTURE, 100));
-  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT_OK(uv_timer_init(loop, &timer_handle));
+  ASSERT_OK(uv_fs_poll_init(loop, &poll_handle));
+  ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_cb, FIXTURE, 100));
+  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
 
-  ASSERT(poll_cb_called == 5);
-  ASSERT(timer_cb_called == 2);
-  ASSERT(close_cb_called == 1);
+  ASSERT_EQ(5, poll_cb_called);
+  ASSERT_EQ(2, timer_cb_called);
+  ASSERT_EQ(1, close_cb_called);
 
-  MAKE_VALGRIND_HAPPY();
+  MAKE_VALGRIND_HAPPY(loop);
   return 0;
 }
 
@@ -176,23 +176,23 @@ TEST_IMPL(fs_poll_getpath) {
 
   remove(FIXTURE);
 
-  ASSERT(0 == uv_fs_poll_init(loop, &poll_handle));
+  ASSERT_OK(uv_fs_poll_init(loop, &poll_handle));
   len = sizeof buf;
-  ASSERT(UV_EINVAL == uv_fs_poll_getpath(&poll_handle, buf, &len));
-  ASSERT(0 == uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
+  ASSERT_EQ(UV_EINVAL, uv_fs_poll_getpath(&poll_handle, buf, &len));
+  ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
   len = sizeof buf;
-  ASSERT(0 == uv_fs_poll_getpath(&poll_handle, buf, &len));
-  ASSERT(buf[len - 1] != 0);
-  ASSERT(buf[len] == '\0');
-  ASSERT(0 == memcmp(buf, FIXTURE, len));
+  ASSERT_OK(uv_fs_poll_getpath(&poll_handle, buf, &len));
+  ASSERT_NE(0, buf[len - 1]);
+  ASSERT_EQ(buf[len], '\0');
+  ASSERT_OK(memcmp(buf, FIXTURE, len));
 
   uv_close((uv_handle_t*) &poll_handle, close_cb);
 
-  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
 
-  ASSERT(close_cb_called == 1);
+  ASSERT_EQ(1, close_cb_called);
 
-  MAKE_VALGRIND_HAPPY();
+  MAKE_VALGRIND_HAPPY(loop);
   return 0;
 }
 
@@ -203,18 +203,16 @@ TEST_IMPL(fs_poll_close_request) {
 
   remove(FIXTURE);
 
-  ASSERT(0 == uv_loop_init(&loop));
+  ASSERT_OK(uv_loop_init(&loop));
 
-  ASSERT(0 == uv_fs_poll_init(&loop, &poll_handle));
-  ASSERT(0 == uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
+  ASSERT_OK(uv_fs_poll_init(&loop, &poll_handle));
+  ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
   uv_close((uv_handle_t*) &poll_handle, close_cb);
   while (close_cb_called == 0)
     uv_run(&loop, UV_RUN_ONCE);
-  ASSERT(close_cb_called == 1);
+  ASSERT_EQ(1, close_cb_called);
 
-  ASSERT(0 == uv_loop_close(&loop));
-
-  MAKE_VALGRIND_HAPPY();
+  MAKE_VALGRIND_HAPPY(&loop);
   return 0;
 }
 
@@ -225,22 +223,20 @@ TEST_IMPL(fs_poll_close_request_multi_start_stop) {
 
   remove(FIXTURE);
 
-  ASSERT(0 == uv_loop_init(&loop));
+  ASSERT_OK(uv_loop_init(&loop));
 
-  ASSERT(0 == uv_fs_poll_init(&loop, &poll_handle));
+  ASSERT_OK(uv_fs_poll_init(&loop, &poll_handle));
 
   for (i = 0; i < 10; ++i) {
-    ASSERT(0 == uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
-    ASSERT(0 == uv_fs_poll_stop(&poll_handle));
+    ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
+    ASSERT_OK(uv_fs_poll_stop(&poll_handle));
   }
   uv_close((uv_handle_t*) &poll_handle, close_cb);
   while (close_cb_called == 0)
     uv_run(&loop, UV_RUN_ONCE);
-  ASSERT(close_cb_called == 1);
+  ASSERT_EQ(1, close_cb_called);
 
-  ASSERT(0 == uv_loop_close(&loop));
-
-  MAKE_VALGRIND_HAPPY();
+  MAKE_VALGRIND_HAPPY(&loop);
   return 0;
 }
 
@@ -251,22 +247,20 @@ TEST_IMPL(fs_poll_close_request_multi_stop_start) {
 
   remove(FIXTURE);
 
-  ASSERT(0 == uv_loop_init(&loop));
+  ASSERT_OK(uv_loop_init(&loop));
 
-  ASSERT(0 == uv_fs_poll_init(&loop, &poll_handle));
+  ASSERT_OK(uv_fs_poll_init(&loop, &poll_handle));
 
   for (i = 0; i < 10; ++i) {
-    ASSERT(0 == uv_fs_poll_stop(&poll_handle));
-    ASSERT(0 == uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
+    ASSERT_OK(uv_fs_poll_stop(&poll_handle));
+    ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 100));
   }
   uv_close((uv_handle_t*) &poll_handle, close_cb);
   while (close_cb_called == 0)
     uv_run(&loop, UV_RUN_ONCE);
-  ASSERT(close_cb_called == 1);
+  ASSERT_EQ(1, close_cb_called);
 
-  ASSERT(0 == uv_loop_close(&loop));
-
-  MAKE_VALGRIND_HAPPY();
+  MAKE_VALGRIND_HAPPY(&loop);
   return 0;
 }
 
@@ -277,24 +271,125 @@ TEST_IMPL(fs_poll_close_request_stop_when_active) {
 
   remove(FIXTURE);
 
-  ASSERT(0 == uv_loop_init(&loop));
+  ASSERT_OK(uv_loop_init(&loop));
 
   /* Set up all handles. */
-  ASSERT(0 == uv_fs_poll_init(&loop, &poll_handle));
-  ASSERT(0 == uv_fs_poll_start(&poll_handle, poll_cb_noop, FIXTURE, 100));
+  ASSERT_OK(uv_fs_poll_init(&loop, &poll_handle));
+  ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_cb_noop, FIXTURE, 100));
   uv_run(&loop, UV_RUN_ONCE);
 
   /* Close the timer handle, and do not crash. */
-  ASSERT(0 == uv_fs_poll_stop(&poll_handle));
+  ASSERT_OK(uv_fs_poll_stop(&poll_handle));
   uv_run(&loop, UV_RUN_ONCE);
 
   /* Clean up after the test. */
   uv_close((uv_handle_t*) &poll_handle, close_cb);
   uv_run(&loop, UV_RUN_ONCE);
-  ASSERT(close_cb_called == 1);
+  ASSERT_EQ(1, close_cb_called);
 
-  ASSERT(0 == uv_loop_close(&loop));
+  MAKE_VALGRIND_HAPPY(&loop);
+  return 0;
+}
 
-  MAKE_VALGRIND_HAPPY();
+
+static void poll_restart_cb(uv_fs_poll_t* handle,
+                            int status,
+                            const uv_stat_t* prev,
+                            const uv_stat_t* curr) {
+  ASSERT_EQ(UV_ENOENT, status);
+  poll_cb_called++;
+}
+
+
+static void poll_restart_from_callback_cb(uv_fs_poll_t* handle,
+                                          int status,
+                                          const uv_stat_t* prev,
+                                          const uv_stat_t* curr) {
+  ASSERT_EQ(UV_ENOENT, status);
+  poll_cb_called++;
+  ASSERT_OK(uv_fs_poll_stop(handle));
+  ASSERT_OK(uv_fs_poll_start(handle, poll_restart_cb, FIXTURE, 60000));
+}
+
+
+static void test_fs_poll_restart(int from_callback) {
+  uv_loop_t loop;
+  uv_fs_poll_t poll_handle;
+
+  remove(FIXTURE);
+  ASSERT_OK(uv_loop_init(&loop));
+  ASSERT_OK(uv_fs_poll_init(&loop, &poll_handle));
+
+  if (from_callback) {
+    ASSERT_OK(uv_fs_poll_start(&poll_handle,
+                              poll_restart_from_callback_cb,
+                              FIXTURE,
+                              60000));
+  } else {
+    ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_cb_fail, FIXTURE, 60000));
+    ASSERT_OK(uv_fs_poll_stop(&poll_handle));
+    ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_restart_cb, FIXTURE, 60000));
+  }
+
+  /* Drain every pending stat without waiting for the next polling interval. */
+  uv_unref((uv_handle_t*) &poll_handle);
+  ASSERT_OK(uv_run(&loop, UV_RUN_DEFAULT));
+  ASSERT_EQ(from_callback ? 2 : 1, poll_cb_called);
+
+  uv_close((uv_handle_t*) &poll_handle, close_cb);
+  ASSERT_OK(uv_run(&loop, UV_RUN_DEFAULT));
+  ASSERT_EQ(1, close_cb_called);
+  ASSERT_OK(uv_loop_close(&loop));
+}
+
+
+TEST_IMPL(fs_poll_restart) {
+  test_fs_poll_restart(0);
+  return 0;
+}
+
+
+TEST_IMPL(fs_poll_restart_from_callback) {
+  test_fs_poll_restart(1);
+  return 0;
+}
+
+
+static void poll_restart_timer_cb(uv_timer_t* timer) {
+  uv_fs_poll_t* handle;
+
+  handle = timer->data;
+  ASSERT_EQ(1, poll_cb_called);
+  ASSERT_OK(uv_fs_poll_stop(handle));
+  ASSERT_OK(uv_fs_poll_start(handle, poll_restart_cb, FIXTURE, 60000));
+  uv_close((uv_handle_t*) timer, NULL);
+}
+
+
+TEST_IMPL(fs_poll_restart_from_timer) {
+  uv_loop_t loop;
+  uv_fs_poll_t poll_handle;
+  uv_timer_t timer;
+
+  remove(FIXTURE);
+  ASSERT_OK(uv_loop_init(&loop));
+  ASSERT_OK(uv_fs_poll_init(&loop, &poll_handle));
+  ASSERT_OK(uv_fs_poll_start(&poll_handle, poll_restart_cb, FIXTURE, 1));
+  uv_unref((uv_handle_t*) &poll_handle);
+  ASSERT_OK(uv_run(&loop, UV_RUN_DEFAULT));
+  ASSERT_EQ(1, poll_cb_called);
+
+  ASSERT_OK(uv_timer_init(&loop, &timer));
+  timer.data = &poll_handle;
+  ASSERT_OK(uv_timer_start(&timer, poll_restart_timer_cb, 0, 0));
+  /* Make both timers due before the earlier user timer restarts the poll. */
+  uv_sleep(10);
+  ASSERT_OK(uv_run(&loop, UV_RUN_DEFAULT));
+  ASSERT_EQ(2, poll_cb_called);
+
+  uv_close((uv_handle_t*) &poll_handle, close_cb);
+  ASSERT_OK(uv_run(&loop, UV_RUN_DEFAULT));
+  ASSERT_EQ(1, close_cb_called);
+  ASSERT_OK(uv_loop_close(&loop));
   return 0;
 }

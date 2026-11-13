@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2004 by Internet Systems Consortium, Inc. ("ISC")
  * Copyright (c) 1996-1999 by Internet Software Consortium.
+ * Copyright (c) 2012-2026 by libuv project contributors.
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,20 +16,25 @@
  * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <stdio.h>
-#include <string.h>
-
-#if defined(_MSC_VER) && _MSC_VER < 1600
-# include "uv/stdint-msvc2008.h"
-#else
-# include <stdint.h>
-#endif
-
 #include "uv.h"
 #include "uv-common.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#if !defined(_WIN32)
+# include <net/if.h> /* if_nametoindex */
+#endif
+
+/* INET6_ADDRSTRLEN is needed for a full IPv4-mapped IPv6 address
+ * for the given platform plus a NUL byte. In posix this is defined to be 46.
+ * On Windows this buffer needs 65 bytes for additional optional
+ * formatting marks that may be present.
+ */
 #define UV__INET_ADDRSTRLEN         16
-#define UV__INET6_ADDRSTRLEN        46
+#define UV__INET6_ADDRSTRLEN        65
 
 
 static int inet_ntop4(const unsigned char *src, char *dst, size_t size);
@@ -82,7 +88,7 @@ static int inet_ntop6(const unsigned char *src, char *dst, size_t size) {
    *  Copy the input (bytewise) array into a wordwise array.
    *  Find the longest run of 0x00's in src[] for :: shorthanding.
    */
-  memset(words, '\0', sizeof words);
+  memset(words, '\0', sizeof(words));
   for (i = 0; i < (int) sizeof(struct in6_addr); i++)
     words[i / 2] |= (src[i] << ((1 - (i % 2)) << 3));
   best.base = -1;
@@ -129,20 +135,21 @@ static int inet_ntop6(const unsigned char *src, char *dst, size_t size) {
     if (i == 6 && best.base == 0 && (best.len == 6 ||
         (best.len == 7 && words[7] != 0x0001) ||
         (best.len == 5 && words[5] == 0xffff))) {
-      int err = inet_ntop4(src+12, tp, sizeof tmp - (tp - tmp));
+      int err = inet_ntop4(src+12, tp, sizeof(tmp) - (tp - tmp));
       if (err)
         return err;
       tp += strlen(tp);
       break;
     }
-    tp += sprintf(tp, "%x", words[i]);
+    tp += snprintf(tp, sizeof(tmp) - (tp - tmp), "%x", words[i]);
   }
   /* Was it a trailing run of 0x00's? */
   if (best.base != -1 && (best.base + best.len) == ARRAY_SIZE(words))
     *tp++ = ':';
   *tp++ = '\0';
-  if (UV_E2BIG == uv__strscpy(dst, tmp, size))
+  if ((size_t) (tp - tmp) > size)
     return UV_ENOSPC;
+  uv__strscpy(dst, tmp, size);
   return 0;
 }
 
@@ -155,19 +162,19 @@ int uv_inet_pton(int af, const char* src, void* dst) {
   case AF_INET:
     return (inet_pton4(src, dst));
   case AF_INET6: {
-    int len;
-    char tmp[UV__INET6_ADDRSTRLEN], *s, *p;
-    s = (char*) src;
+    const char *p;
     p = strchr(src, '%');
     if (p != NULL) {
-      s = tmp;
+      int len;
+      char s[UV__INET6_ADDRSTRLEN];
       len = p - src;
       if (len > UV__INET6_ADDRSTRLEN-1)
         return UV_EINVAL;
       memcpy(s, src, len);
       s[len] = '\0';
-    }
-    return inet_pton6(s, dst);
+      return inet_pton6(s, dst);
+    } else
+      return inet_pton6(src, dst);
   }
   default:
     return UV_EAFNOSUPPORT;
@@ -223,8 +230,8 @@ static int inet_pton6(const char *src, unsigned char *dst) {
   int ch, seen_xdigits;
   unsigned int val;
 
-  memset((tp = tmp), '\0', sizeof tmp);
-  endp = tp + sizeof tmp;
+  memset((tp = tmp), '\0', sizeof(tmp));
+  endp = tp + sizeof(tmp);
   colonp = NULL;
   /* Leading :: requires some special handling. */
   if (*src == ':')
@@ -297,6 +304,76 @@ static int inet_pton6(const char *src, unsigned char *dst) {
   }
   if (tp != endp)
     return UV_EINVAL;
-  memcpy(dst, tmp, sizeof tmp);
+  memcpy(dst, tmp, sizeof(tmp));
   return 0;
+}
+
+
+int uv_ip4_addr(const char* ip, int port, uv_sockaddr_in_t* addr) {
+  memset(addr, 0, sizeof(*addr));
+  addr->sin_family = AF_INET;
+  addr->sin_port = htons(port);
+#ifdef SIN6_LEN
+  addr->sin_len = sizeof(*addr);
+#endif
+  return uv_inet_pton(AF_INET, ip, &(addr->sin_addr.s_addr));
+}
+
+
+int uv_ip6_addr(const char* ip, int port, uv_sockaddr_in6_t* addr) {
+  char address_part[UV__INET6_ADDRSTRLEN];
+  size_t address_part_size;
+  const char* zone_index;
+
+  memset(addr, 0, sizeof(*addr));
+  addr->sin6_family = AF_INET6;
+  addr->sin6_port = htons(port);
+#ifdef SIN6_LEN
+  addr->sin6_len = sizeof(*addr);
+#endif
+
+  zone_index = strchr(ip, '%');
+  if (zone_index != NULL) {
+    address_part_size = zone_index - ip;
+    if (address_part_size >= sizeof(address_part))
+      address_part_size = sizeof(address_part) - 1;
+
+    memcpy(address_part, ip, address_part_size);
+    address_part[address_part_size] = '\0';
+    ip = address_part;
+
+    zone_index++; /* skip '%' */
+    /* NOTE: unknown interface (id=0) is silently ignored */
+#ifdef _WIN32
+    addr->sin6_scope_id = atoi(zone_index);
+#else
+    addr->sin6_scope_id = if_nametoindex(zone_index);
+#endif
+  }
+
+  return uv_inet_pton(AF_INET6, ip, &addr->sin6_addr);
+}
+
+
+int uv_ip4_name(const uv_sockaddr_in_t* src, char* dst, size_t size) {
+  return uv_inet_ntop(AF_INET, &src->sin_addr, dst, size);
+}
+
+
+int uv_ip6_name(const uv_sockaddr_in6_t* src, char* dst, size_t size) {
+  return uv_inet_ntop(AF_INET6, &src->sin6_addr, dst, size);
+}
+
+
+int uv_ip_name(const uv_sockaddr_t* src, char *dst, size_t size) {
+  switch (src->sa_family) {
+  case AF_INET:
+    return uv_inet_ntop(AF_INET, &((uv_sockaddr_in_t*)src)->sin_addr,
+                        dst, size);
+  case AF_INET6:
+    return uv_inet_ntop(AF_INET6, &((uv_sockaddr_in6_t*)src)->sin6_addr,
+                        dst, size);
+  default:
+    return UV_EAFNOSUPPORT;
+  }
 }

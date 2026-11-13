@@ -12,6 +12,15 @@ otherwise it will be performed asynchronously.
 All file operations are run on the threadpool. See :ref:`threadpool` for information
 on the threadpool size.
 
+Starting with libuv v1.45.0, some file operations on Linux are handed off to
+`io_uring <https://en.wikipedia.org/wiki/Io_uring>` when possible. Apart from
+a (sometimes significant) increase in throughput there should be no change in
+observable behavior. Libuv reverts to using its threadpool when the necessary
+kernel features are unavailable or unsuitable. Starting with libuv v1.49.0 this
+behavior was reverted and Libuv on Linux by default will be using the threadpool
+again. In order to enable io_uring the :c:type:`uv_loop_t` instance must be
+configured with the :c:type:`UV_LOOP_USE_IO_URING_SQPOLL` option.
+
 .. note::
      On Windows `uv_fs_*` functions use utf-8 encoding.
 
@@ -24,7 +33,8 @@ Data types
 
 .. c:type:: uv_timespec_t
 
-    Portable equivalent of ``struct timespec``.
+    Y2K38-unsafe data type for storing times with nanosecond resolution.
+    Will be replaced with :c:type:`uv_timespec64_t` in libuv v2.0.
 
     ::
 
@@ -119,13 +129,13 @@ Data types
             uint64_t f_bavail;
             uint64_t f_files;
             uint64_t f_ffree;
-            uint64_t f_spare[4];
+            uint64_t f_frsize;
+            uint64_t f_spare[3];
         } uv_statfs_t;
 
-.. c:enum:: uv_dirent_t
+.. c:enum:: uv_dirent_type_t
 
-    Cross platform (reduced) equivalent of ``struct dirent``.
-    Used in :c:func:`uv_fs_scandir_next`.
+    Type of dirent.
 
     ::
 
@@ -140,6 +150,14 @@ Data types
             UV_DIRENT_BLOCK
         } uv_dirent_type_t;
 
+
+.. c:type:: uv_dirent_t
+
+    Cross platform (reduced) equivalent of ``struct dirent``.
+    Used in :c:func:`uv_fs_scandir_next`.
+
+    ::
+
         typedef struct uv_dirent_s {
             const char* name;
             uv_dirent_type_t type;
@@ -148,8 +166,8 @@ Data types
 .. c:type:: uv_dir_t
 
     Data type used for streaming directory iteration.
-    Used by :c:func:`uv_fs_opendir()`, :c:func:`uv_fs_readdir()`, and
-    :c:func:`uv_fs_closedir()`. `dirents` represents a user provided array of
+    Used by :c:func:`uv_fs_opendir`, :c:func:`uv_fs_readdir`, and
+    :c:func:`uv_fs_closedir`. `dirents` represents a user provided array of
     `uv_dirent_t`s used to hold results. `nentries` is the user provided maximum
     array size of `dirents`.
 
@@ -159,6 +177,10 @@ Data types
             uv_dirent_t* dirents;
             size_t nentries;
         } uv_dir_t;
+
+.. c:type:: void (*uv_fs_cb)(uv_fs_t* req)
+
+    Callback called when a request is completed asynchronously.
 
 
 Public members
@@ -218,7 +240,8 @@ API
 
 .. c:function:: int uv_fs_read(uv_loop_t* loop, uv_fs_t* req, uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset, uv_fs_cb cb)
 
-    Equivalent to :man:`preadv(2)`.
+    Equivalent to :man:`preadv(2)`. If the `offset` argument is `-1`, then
+    the current file offset is used and updated.
 
     .. warning::
         On Windows, under non-MSVC environments (e.g. when GCC or Clang is used
@@ -231,7 +254,8 @@ API
 
 .. c:function:: int uv_fs_write(uv_loop_t* loop, uv_fs_t* req, uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset, uv_fs_cb cb)
 
-    Equivalent to :man:`pwritev(2)`.
+    Equivalent to :man:`pwritev(2)`. If the `offset` argument is `-1`, then
+    the current file offset is used and updated.
 
     .. warning::
         On Windows, under non-MSVC environments (e.g. when GCC or Clang is used
@@ -277,6 +301,9 @@ API
 
     Closes the directory stream represented by `dir` and frees the memory
     allocated by `uv_fs_opendir()`.
+
+    If the request is cancelled, the directory remains open. After cleaning up
+    the cancelled request, the caller must call `uv_fs_closedir()` again.
 
     .. versionadded:: 1.28.0
 
@@ -367,7 +394,7 @@ API
       create a copy-on-write reflink. If the underlying platform does not
       support copy-on-write, or an error occurs while attempting to use
       copy-on-write, a fallback copy mechanism based on
-      :c:func:`uv_fs_sendfile()` is used.
+      :c:func:`uv_fs_sendfile` is used.
     - `UV_FS_COPYFILE_FICLONE_FORCE`: If present, `uv_fs_copyfile()` will
       attempt to create a copy-on-write reflink. If the underlying platform does
       not support copy-on-write, or an error occurs while attempting to use
@@ -407,6 +434,12 @@ API
 
     Equivalent to :man:`utime(2)`, :man:`futimes(3)` and :man:`lutimes(3)` respectively.
 
+    Passing `UV_FS_UTIME_NOW` as the atime or mtime sets the timestamp to the
+    current time.
+
+    Passing `UV_FS_UTIME_OMIT` as the atime or mtime leaves the timestamp
+    untouched.
+
     .. note::
       z/OS: `uv_fs_lutime()` is not implemented for z/OS. It can still be called but will return
       ``UV_ENOSYS``.
@@ -441,7 +474,7 @@ API
 
 .. c:function:: int uv_fs_realpath(uv_loop_t* loop, uv_fs_t* req, const char* path, uv_fs_cb cb)
 
-    Equivalent to :man:`realpath(3)` on Unix. Windows uses `GetFinalPathNameByHandle <https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlea>`_.
+    Equivalent to :man:`realpath(3)` on Unix. Windows uses `GetFinalPathNameByHandleW <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew>`_.
     The resulting string is stored in `req->ptr`.
 
     .. warning::
@@ -462,10 +495,6 @@ API
 
         The background story and some more details on these issues can be checked
         `here <https://github.com/nodejs/node/issues/7726>`_.
-
-    .. note::
-      This function is not implemented on Windows XP and Windows Server 2003.
-      On these systems, UV_ENOSYS is returned.
 
     .. versionadded:: 1.8.0
 
@@ -525,7 +554,7 @@ Helper functions
 .. c:function:: uv_os_fd_t uv_get_osfhandle(int fd)
 
    For a file descriptor in the C runtime, get the OS-dependent handle.
-   On UNIX, returns the ``fd`` intact. On Windows, this calls `_get_osfhandle <https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/get-osfhandle?view=vs-2019>`_.
+   On UNIX, returns the ``fd`` intact. On Windows, this calls `_get_osfhandle <https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/get-osfhandle?view=vs-2019>`_.
    Note that the return value is still owned by the C runtime,
    any attempts to close it or to use it after closing the fd may lead to malfunction.
 
@@ -534,7 +563,7 @@ Helper functions
 .. c:function:: int uv_open_osfhandle(uv_os_fd_t os_fd)
 
    For a OS-dependent handle, get the file descriptor in the C runtime.
-   On UNIX, returns the ``os_fd`` intact. On Windows, this calls `_open_osfhandle <https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/open-osfhandle?view=vs-2019>`_.
+   On UNIX, returns the ``os_fd`` intact. On Windows, this calls `_open_osfhandle <https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/open-osfhandle?view=vs-2019>`_.
    Note that this consumes the argument, any attempts to close it or to use it
    after closing the return value may lead to malfunction.
 
@@ -560,7 +589,7 @@ File open constants
 
     .. note::
         `UV_FS_O_DIRECT` is supported on Linux, and on Windows via
-        `FILE_FLAG_NO_BUFFERING <https://docs.microsoft.com/en-us/windows/win32/fileio/file-buffering>`_.
+        `FILE_FLAG_NO_BUFFERING <https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering>`_.
         `UV_FS_O_DIRECT` is not supported on macOS.
 
 .. c:macro:: UV_FS_O_DIRECTORY
@@ -577,7 +606,7 @@ File open constants
 
     .. note::
         `UV_FS_O_DSYNC` is supported on Windows via
-        `FILE_FLAG_WRITE_THROUGH <https://docs.microsoft.com/en-us/windows/win32/fileio/file-buffering>`_.
+        `FILE_FLAG_WRITE_THROUGH <https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering>`_.
 
 .. c:macro:: UV_FS_O_EXCL
 
@@ -644,7 +673,7 @@ File open constants
 
     .. note::
         `UV_FS_O_RANDOM` is only supported on Windows via
-        `FILE_FLAG_RANDOM_ACCESS <https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea>`_.
+        `FILE_FLAG_RANDOM_ACCESS <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew>`_.
 
 .. c:macro:: UV_FS_O_RDONLY
 
@@ -661,7 +690,7 @@ File open constants
 
     .. note::
         `UV_FS_O_SEQUENTIAL` is only supported on Windows via
-        `FILE_FLAG_SEQUENTIAL_SCAN <https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea>`_.
+        `FILE_FLAG_SEQUENTIAL_SCAN <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew>`_.
 
 .. c:macro:: UV_FS_O_SHORT_LIVED
 
@@ -669,7 +698,7 @@ File open constants
 
     .. note::
         `UV_FS_O_SHORT_LIVED` is only supported on Windows via
-        `FILE_ATTRIBUTE_TEMPORARY <https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea>`_.
+        `FILE_ATTRIBUTE_TEMPORARY <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew>`_.
 
 .. c:macro:: UV_FS_O_SYMLINK
 
@@ -682,7 +711,7 @@ File open constants
 
     .. note::
         `UV_FS_O_SYNC` is supported on Windows via
-        `FILE_FLAG_WRITE_THROUGH <https://docs.microsoft.com/en-us/windows/win32/fileio/file-buffering>`_.
+        `FILE_FLAG_WRITE_THROUGH <https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering>`_.
 
 .. c:macro:: UV_FS_O_TEMPORARY
 
@@ -690,7 +719,7 @@ File open constants
 
     .. note::
         `UV_FS_O_TEMPORARY` is only supported on Windows via
-        `FILE_ATTRIBUTE_TEMPORARY <https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea>`_.
+        `FILE_ATTRIBUTE_TEMPORARY <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew>`_.
 
 .. c:macro:: UV_FS_O_TRUNC
 

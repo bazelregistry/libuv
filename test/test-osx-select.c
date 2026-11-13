@@ -26,6 +26,8 @@
 
 #include <sys/ioctl.h>
 #include <string.h>
+#include <unistd.h>
+#include <util.h>
 
 static int read_count;
 
@@ -62,7 +64,7 @@ TEST_IMPL(osx_select) {
   }
 
   r = uv_tty_init(uv_default_loop(), &tty, fd, 1);
-  ASSERT(r == 0);
+  ASSERT_OK(r);
 
   uv_read_start((uv_stream_t*) &tty, alloc_cb, read_cb);
 
@@ -72,14 +74,14 @@ TEST_IMPL(osx_select) {
         "feel pretty happy\n";
   for (i = 0, len = strlen(str); i < len; i++) {
     r = ioctl(fd, TIOCSTI, str + i);
-    ASSERT(r == 0);
+    ASSERT_OK(r);
   }
 
   uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 
-  ASSERT(read_count == 3);
+  ASSERT_EQ(3, read_count);
 
-  MAKE_VALGRIND_HAPPY();
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }
 
@@ -97,13 +99,13 @@ TEST_IMPL(osx_select_many_fds) {
   TEST_FILE_LIMIT(ARRAY_SIZE(tcps) + 100);
 
   r = uv_ip4_addr("127.0.0.1", 0, &addr);
-  ASSERT(r == 0);
+  ASSERT_OK(r);
 
   for (i = 0; i < ARRAY_SIZE(tcps); i++) {
     r = uv_tcp_init(uv_default_loop(), &tcps[i]);
-    ASSERT(r == 0);
+    ASSERT_OK(r);
     r = uv_tcp_bind(&tcps[i], (const struct sockaddr *) &addr, 0);
-    ASSERT(r == 0);
+    ASSERT_OK(r);
     uv_unref((uv_handle_t*) &tcps[i]);
   }
 
@@ -115,10 +117,10 @@ TEST_IMPL(osx_select_many_fds) {
   }
 
   r = uv_tty_init(uv_default_loop(), &tty, fd, 1);
-  ASSERT(r == 0);
+  ASSERT_OK(r);
 
   r = uv_read_start((uv_stream_t*) &tty, alloc_cb, read_cb);
-  ASSERT(r == 0);
+  ASSERT_OK(r);
 
   /* Emulate user-input */
   str = "got some input\n"
@@ -126,14 +128,60 @@ TEST_IMPL(osx_select_many_fds) {
         "feel pretty happy\n";
   for (i = 0, len = strlen(str); i < len; i++) {
     r = ioctl(fd, TIOCSTI, str + i);
-    ASSERT(r == 0);
+    ASSERT_OK(r);
   }
 
   uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 
-  ASSERT(read_count == 3);
+  ASSERT_EQ(3, read_count);
 
-  MAKE_VALGRIND_HAPPY();
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
+
+
+TEST_IMPL(osx_select_close) {
+  int master_fd;
+  int slave_fd;
+  int tty_fd;
+  uv_os_fd_t handle_fd;
+  uv_tty_t tty;
+  uv_loop_t* loop;
+
+  ASSERT_PTR_NE(SIG_ERR, signal(SIGHUP, SIG_IGN));
+  ASSERT_OK(openpty(&master_fd, &slave_fd, NULL, NULL, NULL));
+
+  /* A new session is needed to acquire the pty as controlling terminal, but
+   * setsid() fails when this process is already a process group leader. That
+   * happens when the runner executes the test in-process instead of in a
+   * child process, so skip rather than fail.
+   */
+  if (setsid() == -1) {
+    ASSERT_OK(close(master_fd));
+    ASSERT_OK(close(slave_fd));
+    ASSERT_PTR_NE(SIG_ERR, signal(SIGHUP, SIG_DFL));
+    RETURN_SKIP("Cannot create a new session, already a group leader.");
+  }
+
+  ASSERT_OK(ioctl(slave_fd, TIOCSCTTY, 0));
+  loop = uv_default_loop();
+  tty_fd = open("/dev/tty", O_RDONLY);
+  ASSERT_GE(tty_fd, 0);
+  ASSERT_OK(uv_tty_init(loop, &tty, tty_fd, 1));
+  ASSERT_OK(uv_fileno((uv_handle_t*) &tty, &handle_fd));
+  ASSERT_NE(tty_fd, handle_fd);
+
+  uv_close((uv_handle_t*) &tty, NULL);
+  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+
+  errno = 0;
+  ASSERT_EQ(-1, fcntl(handle_fd, F_GETFD));
+  ASSERT_EQ(EBADF, errno);
+
+  ASSERT_OK(close(master_fd));
+  ASSERT_OK(close(slave_fd));
+  ASSERT_PTR_NE(SIG_ERR, signal(SIGHUP, SIG_DFL));
+  MAKE_VALGRIND_HAPPY(loop);
   return 0;
 }
 

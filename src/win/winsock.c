@@ -38,7 +38,7 @@ struct sockaddr_in6 uv_addr_ip6_any_;
 /*
  * Retrieves the pointer to a winsock extension function.
  */
-static BOOL uv_get_extension_function(SOCKET socket, GUID guid,
+static BOOL uv__get_extension_function(SOCKET socket, GUID guid,
     void **target) {
   int result;
   DWORD bytes;
@@ -62,20 +62,20 @@ static BOOL uv_get_extension_function(SOCKET socket, GUID guid,
 }
 
 
-BOOL uv_get_acceptex_function(SOCKET socket, LPFN_ACCEPTEX* target) {
+BOOL uv__get_acceptex_function(SOCKET socket, LPFN_ACCEPTEX* target) {
   const GUID wsaid_acceptex = WSAID_ACCEPTEX;
-  return uv_get_extension_function(socket, wsaid_acceptex, (void**)target);
+  return uv__get_extension_function(socket, wsaid_acceptex, (void**)target);
 }
 
 
-BOOL uv_get_connectex_function(SOCKET socket, LPFN_CONNECTEX* target) {
+BOOL uv__get_connectex_function(SOCKET socket, LPFN_CONNECTEX* target) {
   const GUID wsaid_connectex = WSAID_CONNECTEX;
-  return uv_get_extension_function(socket, wsaid_connectex, (void**)target);
+  return uv__get_extension_function(socket, wsaid_connectex, (void**)target);
 }
 
 
 
-void uv_winsock_init(void) {
+void uv__winsock_init(void) {
   WSADATA wsa_data;
   int errorno;
   SOCKET dummy;
@@ -102,7 +102,8 @@ void uv_winsock_init(void) {
 
   /* Try to detect non-IFS LSPs */
   uv_tcp_non_ifs_lsp_ipv4 = 1;
-  dummy = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+  dummy = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_IP, NULL, 0,
+                     WSA_FLAG_NO_HANDLE_INHERIT);
   if (dummy != INVALID_SOCKET) {
     opt_len = (int) sizeof protocol_info;
     if (getsockopt(dummy,
@@ -118,7 +119,8 @@ void uv_winsock_init(void) {
 
   /* Try to detect IPV6 support and non-IFS LSPs */
   uv_tcp_non_ifs_lsp_ipv6 = 1;
-  dummy = socket(AF_INET6, SOCK_STREAM, IPPROTO_IP);
+  dummy = WSASocketW(AF_INET6, SOCK_STREAM, IPPROTO_IP, NULL, 0,
+                     WSA_FLAG_NO_HANDLE_INHERIT);
   if (dummy != INVALID_SOCKET) {
     opt_len = (int) sizeof protocol_info;
     if (getsockopt(dummy,
@@ -134,7 +136,7 @@ void uv_winsock_init(void) {
 }
 
 
-int uv_ntstatus_to_winsock_error(NTSTATUS status) {
+int uv__ntstatus_to_winsock_error(NTSTATUS status) {
   switch (status) {
     case STATUS_SUCCESS:
       return ERROR_SUCCESS;
@@ -267,7 +269,7 @@ int uv_ntstatus_to_winsock_error(NTSTATUS status) {
  * the user to use the default msafd driver, doesn't work when other LSPs are
  * stacked on top of it.
  */
-int WSAAPI uv_wsarecv_workaround(SOCKET socket, WSABUF* buffers,
+int WSAAPI uv__wsarecv_workaround(SOCKET socket, WSABUF* buffers,
     DWORD buffer_count, DWORD* bytes, DWORD* flags, WSAOVERLAPPED *overlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) {
   NTSTATUS status;
@@ -346,7 +348,7 @@ int WSAAPI uv_wsarecv_workaround(SOCKET socket, WSABUF* buffers,
       break;
 
     default:
-      error = uv_ntstatus_to_winsock_error(status);
+      error = uv__ntstatus_to_winsock_error(status);
       break;
   }
 
@@ -360,8 +362,8 @@ int WSAAPI uv_wsarecv_workaround(SOCKET socket, WSABUF* buffers,
 }
 
 
-/* See description of uv_wsarecv_workaround. */
-int WSAAPI uv_wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
+/* See description of uv__wsarecv_workaround. */
+int WSAAPI uv__wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
     DWORD buffer_count, DWORD* bytes, DWORD* flags, struct sockaddr* addr,
     int* addr_len, WSAOVERLAPPED *overlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) {
@@ -444,7 +446,7 @@ int WSAAPI uv_wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
       break;
 
     default:
-      error = uv_ntstatus_to_winsock_error(status);
+      error = uv__ntstatus_to_winsock_error(status);
       break;
   }
 
@@ -458,68 +460,26 @@ int WSAAPI uv_wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
 }
 
 
-int WSAAPI uv_msafd_poll(SOCKET socket, AFD_POLL_INFO* info_in,
+int WSAAPI uv__msafd_poll(SOCKET socket, AFD_POLL_INFO* info_in,
     AFD_POLL_INFO* info_out, OVERLAPPED* overlapped) {
-  IO_STATUS_BLOCK iosb;
   IO_STATUS_BLOCK* iosb_ptr;
-  HANDLE event = NULL;
-  void* apc_context;
   NTSTATUS status;
   DWORD error;
 
-  if (overlapped != NULL) {
-    /* Overlapped operation. */
-    iosb_ptr = (IO_STATUS_BLOCK*) &overlapped->Internal;
-    event = overlapped->hEvent;
-
-    /* Do not report iocp completion if hEvent is tagged. */
-    if ((uintptr_t) event & 1) {
-      event = (HANDLE)((uintptr_t) event & ~(uintptr_t) 1);
-      apc_context = NULL;
-    } else {
-      apc_context = overlapped;
-    }
-
-  } else {
-    /* Blocking operation. */
-    iosb_ptr = &iosb;
-    event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (event == NULL) {
-      return SOCKET_ERROR;
-    }
-    apc_context = NULL;
-  }
-
+  assert(overlapped != NULL);
+  iosb_ptr = (IO_STATUS_BLOCK*) &overlapped->Internal;
   iosb_ptr->Status = STATUS_PENDING;
+
   status = pNtDeviceIoControlFile((HANDLE) socket,
-                                  event,
+                                  overlapped->hEvent,
                                   NULL,
-                                  apc_context,
+                                  overlapped,
                                   iosb_ptr,
                                   IOCTL_AFD_POLL,
                                   info_in,
                                   sizeof *info_in,
                                   info_out,
                                   sizeof *info_out);
-
-  if (overlapped == NULL) {
-    /* If this is a blocking operation, wait for the event to become signaled,
-     * and then grab the real status from the io status block. */
-    if (status == STATUS_PENDING) {
-      DWORD r = WaitForSingleObject(event, INFINITE);
-
-      if (r == WAIT_FAILED) {
-        DWORD saved_error = GetLastError();
-        CloseHandle(event);
-        WSASetLastError(saved_error);
-        return SOCKET_ERROR;
-      }
-
-      status = iosb.Status;
-    }
-
-    CloseHandle(event);
-  }
 
   switch (status) {
     case STATUS_SUCCESS:
@@ -531,7 +491,7 @@ int WSAAPI uv_msafd_poll(SOCKET socket, AFD_POLL_INFO* info_in,
       break;
 
     default:
-      error = uv_ntstatus_to_winsock_error(status);
+      error = uv__ntstatus_to_winsock_error(status);
       break;
   }
 

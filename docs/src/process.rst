@@ -40,7 +40,7 @@ Data types
     will indicate the exit status and the signal that caused the process to
     terminate, if any.
 
-.. c:type:: uv_process_flags
+.. c:enum:: uv_process_flags
 
     Flags to be set on the flags field of :c:type:`uv_process_options_t`.
 
@@ -85,7 +85,14 @@ Data types
             * option is only meaningful on Windows systems. On Unix it is silently
             * ignored.
             */
-            UV_PROCESS_WINDOWS_HIDE_GUI = (1 << 6)
+            UV_PROCESS_WINDOWS_HIDE_GUI = (1 << 6),
+            /*
+             * On Windows, if the path to the program to execute, specified in
+             * uv_process_options_t's file field, has a directory component,
+             * search for the exact file name before trying variants with
+             * extensions like '.exe' or '.cmd'.
+             */
+            UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME = (1 << 7)
         };
 
 .. c:type:: uv_stdio_container_t
@@ -109,10 +116,39 @@ Data types
     ::
 
         typedef enum {
+            /*
+            * The following four options are mutually-exclusive, and define
+            * the operation to perform for the corresponding file descriptor
+            * in the child process:
+            */
+
+            /*
+            * No file descriptor will be provided (or redirected to
+            * `/dev/null` if it is fd 0, 1 or 2).
+            */
             UV_IGNORE = 0x00,
+
+            /*
+            * Open a new pipe into `data.stream`, per the flags below. The
+            * `data.stream` field must point to a uv_pipe_t object that has
+            * been initialized with `uv_pipe_init(loop, data.stream, ipc);`,
+            * but not yet opened or connected.
+            /*
             UV_CREATE_PIPE = 0x01,
+
+            /*
+            * The child process will be given a duplicate of the parent's
+            * file descriptor given by `data.fd`.
+            */
             UV_INHERIT_FD = 0x02,
+
+            /*
+            * The child process will be given a duplicate of the parent's
+            * file descriptor being used by the stream handle given by
+            * `data.stream`.
+            */
             UV_INHERIT_STREAM = 0x04,
+
             /*
             * When UV_CREATE_PIPE is specified, UV_READABLE_PIPE and UV_WRITABLE_PIPE
             * determine the direction of flow, from the child process' perspective. Both
@@ -120,6 +156,7 @@ Data types
             */
             UV_READABLE_PIPE = 0x10,
             UV_WRITABLE_PIPE = 0x20,
+
             /*
             * When UV_CREATE_PIPE is specified, specifying UV_NONBLOCK_PIPE opens the
             * handle in non-blocking mode in the child. This may cause loss of data,
@@ -135,7 +172,10 @@ Public members
 
 .. c:member:: int uv_process_t.pid
 
-    The PID of the spawned process. It's set after calling :c:func:`uv_spawn`.
+    The PID of the spawned process. It is set after calling :c:func:`uv_spawn`
+    and retains the value even after the process exits. The value is only
+    unique while the process is alive; after exit, another process may be
+    reassigned the same PID.
 
 .. note::
     The :c:type:`uv_handle_t` members also apply.
@@ -153,7 +193,7 @@ Public members
     Command line arguments. args[0] should be the path to the program. On
     Windows this uses `CreateProcess` which concatenates the arguments into a
     string this can cause some strange errors. See the
-    ``UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS`` flag on :c:type:`uv_process_flags`.
+    ``UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS`` flag on :c:enum:`uv_process_flags`.
 
 .. c:member:: char** uv_process_options_t.env
 
@@ -166,7 +206,7 @@ Public members
 .. c:member:: unsigned int uv_process_options_t.flags
 
     Various flags that control how :c:func:`uv_spawn` behaves. See
-    :c:type:`uv_process_flags`.
+    :c:enum:`uv_process_flags`.
 
 .. c:member:: int uv_process_options_t.stdio_count
 .. c:member:: uv_stdio_container_t* uv_process_options_t.stdio
@@ -222,20 +262,35 @@ API
     Initializes the process handle and starts the process. If the process is
     successfully spawned, this function will return 0. Otherwise, the
     negative error code corresponding to the reason it couldn't spawn is
-    returned.
+    returned. Note that either way-success or failure--you must eventually call
+    :c:func:`uv_close` to close the handle again before freeing the memory of
+    the handle, unlike other the other init functions in libuv.
 
     Possible reasons for failing to spawn would include (but not be limited to)
     the file to execute not existing, not having permissions to use the setuid or
     setgid specified, or not having enough memory to allocate for the new
     process.
 
+    .. warning::
+        On unix, if the process has not yet exited when you call `uv_close`,
+        you will create a zombie that libuv cannot reap. You are responsible
+        for calling `waitpid` later. This is not relevant on Windows.
+
     .. versionchanged:: 1.24.0 Added `UV_PROCESS_WINDOWS_HIDE_CONSOLE` and
                         `UV_PROCESS_WINDOWS_HIDE_GUI` flags.
+
+    .. versionchanged:: 1.48.0 Added the
+                        `UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME` flag.
 
 .. c:function:: int uv_process_kill(uv_process_t* handle, int signum)
 
     Sends the specified signal to the given process handle. Check the documentation
     on :c:ref:`signal` for signal support, specially on Windows.
+
+    If the specified process is already dead, this will not kill a different
+    process which happened to reuse the same pid. By contrast, `uv_kill` may
+    kill an arbitrary other process if you use a cached value of
+    :c:func:`uv_process_get_pid`.
 
 .. c:function:: int uv_kill(int pid, int signum)
 

@@ -39,7 +39,8 @@ static void* args_mem;
 
 
 static void init_process_title_mutex_once(void) {
-  uv_mutex_init(&process_title_mutex);
+  if (uv_mutex_init(&process_title_mutex))
+    abort();
 }
 
 
@@ -52,6 +53,10 @@ char** uv_setup_args(int argc, char** argv) {
 
   if (argc <= 0)
     return argv;
+
+#ifdef __APPLE__
+  uv__process_title_init();
+#endif
 
   pt.str = argv[0];
   pt.len = strlen(argv[0]);
